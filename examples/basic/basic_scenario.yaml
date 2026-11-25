@@ -1,0 +1,29 @@
+scenario: basic
+
+runtime:
+  threads: 2
+  statistics:
+    publish_interval_seconds: 0
+
+nodes:
+  - id: source
+    type: example_source
+    params:
+      transaction_size: 4
+      transactions: 8
+      value: 3
+  - id: gain
+    type: example_gain
+    params:
+      transaction_size: 4
+      #gain: 2
+  - id: sink
+    type: example_sink
+    params:
+      transaction_size: 4
+
+edges:
+  - producer: {node: source, port: samples}
+    consumer: {node: gain, port: input}
+  - producer: {node: gain, port: output}
+    consumer: {node: sink, port: input}

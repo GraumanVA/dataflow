@@ -1,0 +1,13 @@
+BasedOnStyle: Microsoft
+Language: Cpp
+AccessModifierOffset : -4
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 80
+BreakBeforeBraces: Attach
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowAllArgumentsOnNextLine: false
+AlignAfterOpenBracket: DontAlign
+BinPackParameters: false
+BinPackArguments: false

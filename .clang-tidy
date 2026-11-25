@@ -1,0 +1,35 @@
+---
+# Enable all default checks, but selectively filter groups
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  cppcoreguidelines-*,
+  modernize-*,
+  performance-*,
+  readability-*,
+  -cppcoreguidelines-pro-bounds-avoid-unchecked-container-access,
+  -bugprone-easily-swappable-parameters,
+  -readability-identifier-length,
+  -modernize-use-trailing-return-type,
+  -readability-braces-around-statements
+
+# Treat all enabled diagnostic warnings as compilation errors
+# WarningsAsErrors: '*'
+
+# Only lint header files belonging to the project, ignoring third-party libraries
+HeaderFilterRegex: '.*'
+SystemHeaders: false
+
+# Define specific behavior for enabled check modules
+CheckOptions:
+  # Enforce lower_case naming for local variables
+  - key:             readability-identifier-naming.VariableCase
+    value:           lower_case
+  # Enforce CamelCase naming for classes
+  - key:             readability-identifier-naming.ClassCase
+    value:           CamelCase
+  # Prevent functions from exceeding a specific complexity threshold
+  - key:             readability-function-size.LineThreshold
+    value:           '100'
+...

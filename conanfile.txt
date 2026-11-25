@@ -1,0 +1,13 @@
+[requires]
+reflect-cpp/0.25.0
+yaml-cpp/0.8.0
+
+[options]
+reflect-cpp/*:with_yaml=True
+
+[generators]
+CMakeDeps
+CMakeToolchain
+
+[layout]
+cmake_layout

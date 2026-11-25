@@ -1,0 +1,60 @@
+scenario: bsc_sweep
+
+runtime:
+  threads: 1
+  statistics:
+    publish_interval_seconds: 0.5
+  stop:
+    observers: [ber]
+  reporting:
+    terminal:
+      enabled: true
+      interval_seconds: 1
+      update_in_place: true
+
+sweep:
+  case_naming: parameters
+  axes:
+    - name: crossover_probability
+      display_name: p
+      values: [0.01, 0.05, 0.1]
+      targets:
+        - {node: channel, param: crossover_probability}
+
+nodes:
+  - id: source
+    type: random_bits_i8
+    params:
+      seed: 1234
+      emitted_block_size: 1024
+      probability_one: 0.5
+
+  - id: fanout
+    type: broadcast_i8
+    params:
+      transaction_size: 1024
+      delivery: [reliable, reliable]
+
+  - id: channel
+    type: bsc_i8
+    params:
+      crossover_probability: 0.01
+      accepted_size: 1024
+
+  - id: ber
+    type: ber_i8
+    params:
+      transaction_size: 1024
+      bits_per_element: 1
+      stop_mode: bit_errors
+      target_bit_errors: 1000000
+
+edges:
+  - producer: {node: source, port: bits}
+    consumer: {node: fanout, port: input}
+  - producer: {node: fanout, port: output_0}
+    consumer: {node: channel, port: input}
+  - producer: {node: fanout, port: output_1}
+    consumer: {node: ber, port: reference}
+  - producer: {node: channel, port: output}
+    consumer: {node: ber, port: received}
