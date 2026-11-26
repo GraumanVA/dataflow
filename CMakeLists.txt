@@ -5,9 +5,6 @@ include(CTest)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
 option(DATAFLOW_ENABLE_CLANG_TIDY "Run clang-tidy during builds" OFF)
 option(DATAFLOW_BUILD_EXAMPLES "Build dataflow examples" ON)
 
@@ -42,6 +39,7 @@ add_library(dataflow_core
 add_library(dataflow::core ALIAS dataflow_core)
 set_target_properties(dataflow_core PROPERTIES EXPORT_NAME core)
 
+target_compile_features(dataflow_core PUBLIC cxx_std_20)
 target_include_directories(dataflow_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
@@ -131,7 +129,6 @@ install(FILES
     include/interfaces/typed_statistics_provider.h
     include/interfaces/worker_factory.h
     include/interfaces/worker_ports.h
-    include/interfaces/worker_yaml_factory.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/interfaces
 )
 install(FILES

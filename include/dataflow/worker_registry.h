@@ -3,10 +3,10 @@
 #include <interfaces/statistics.h>
 #include <interfaces/worker_factory.h>
 
+#include <algorithm>
 #include <concepts>
 #include <functional>
 #include <memory>
-#include <ranges>
 #include <rfl/DefaultIfMissing.hpp>
 #include <rfl/yaml.hpp>
 #include <stdexcept>

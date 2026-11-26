@@ -6,8 +6,19 @@ simulation after collecting enough statistics.
 
 ## Build and run
 
-Install the Conan dependencies, configure CMake, and build the project using the
-existing presets for your platform. Run one scenario with:
+Use a Conan 2 profile for your compiler and install dependencies for each build
+configuration you intend to use. For example, with a Visual Studio profile as
+your Conan default, prepare both Debug and Release in the same build directory:
+
+```text
+conan install . -s:h build_type=Release -s:h compiler.cppstd=20 --build=missing
+conan install . -s:h build_type=Debug -s:h compiler.cppstd=20 --build=missing
+cmake --preset conan-default
+cmake --build --preset conan-debug
+ctest --preset conan-debug --output-on-failure
+```
+
+Use `conan-release` to build or test Release. Run one scenario with:
 
 ```text
 dataflow path/to/scenario.yaml
