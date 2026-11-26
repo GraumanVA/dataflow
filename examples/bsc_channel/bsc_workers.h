@@ -3,8 +3,8 @@
 #include <dataflow/observer.h>
 #include <dataflow/worker.h>
 #include <dataflow/worker_registry.h>
-#include <workers/ber_observer.h>
-#include <workers/broadcaster.h>
+#include <dataflow/workers/ber_observer.h>
+#include <dataflow/workers/broadcaster.h>
 
 #include <cmath>
 #include <concepts>
@@ -29,6 +29,7 @@ class RandomBitGenerator final
     using typename Base::input_view;
     using typename Base::output_view;
 
+    std::uint64_t base_seed_;
     std::mt19937_64 generator_;
     std::bernoulli_distribution one_;
 
@@ -52,10 +53,16 @@ public:
     }
 
     explicit RandomBitGenerator(const RandomBitGeneratorConfig &config)
-        : generator_(config.seed), one_(config.probability_one) {
+        : base_seed_(config.seed), generator_(config.seed),
+          one_(config.probability_one) {
     }
 
 protected:
+    void initialize_random_streams(
+        const dataflow::WorkerContext &context) override {
+        generator_ = context.make_random_engine(base_seed_);
+    }
+
     void work_one(std::span<input_view>,
         std::span<output_view> outputs) override {
         outputs[0].for_each([this](T &bit) {
@@ -67,6 +74,7 @@ protected:
 struct BscChannelConfig {
     double crossover_probability = 0.01;
     std::size_t accepted_size = 1024;
+    std::uint64_t seed = 0;
 };
 
 template <std::integral T>
@@ -76,7 +84,8 @@ class BscChannel final
     using typename Base::input_view;
     using typename Base::output_view;
 
-    std::mt19937_64 generator_{0x0ULL};
+    std::uint64_t base_seed_;
+    std::mt19937_64 generator_;
     std::bernoulli_distribution cross_;
 
 public:
@@ -100,10 +109,16 @@ public:
     }
 
     explicit BscChannel(const BscChannelConfig &config)
-        : cross_(config.crossover_probability) {
+        : base_seed_(config.seed), generator_(config.seed),
+          cross_(config.crossover_probability) {
     }
 
 protected:
+    void initialize_random_streams(
+        const dataflow::WorkerContext &context) override {
+        generator_ = context.make_random_engine(base_seed_);
+    }
+
     void work_one(std::span<input_view> inputs,
         std::span<output_view> outputs) override {
         for (std::size_t index{}; index < inputs[0].size(); ++index) {

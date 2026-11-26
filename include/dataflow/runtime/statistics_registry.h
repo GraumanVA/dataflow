@@ -1,8 +1,8 @@
 #pragma once
 
-#include <graphs/config_graph.h>
-#include <graphs/execution_graph.h>
-#include <interfaces/statistics.h>
+#include <dataflow/graphs/config_graph.h>
+#include <dataflow/graphs/execution_graph.h>
+#include <dataflow/interfaces/statistics.h>
 
 #include <condition_variable>
 #include <cstddef>

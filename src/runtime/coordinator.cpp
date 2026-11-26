@@ -1,14 +1,15 @@
-#include <runtime/coordinator.h>
+#include <dataflow/runtime/coordinator.h>
 
-#include <graphs/execution_graph.h>
-#include <interfaces/statistics.h>
-#include <interfaces/stop_token.h>
-#include <runtime/replica_executor.h>
-#include <runtime/statistics_registry.h>
-#include <runtime/statistics_reporter.h>
+#include <dataflow/graphs/execution_graph.h>
+#include <dataflow/interfaces/statistics.h>
+#include <dataflow/interfaces/stop_token.h>
+#include <dataflow/runtime/replica_executor.h>
+#include <dataflow/runtime/statistics_registry.h>
+#include <dataflow/runtime/statistics_reporter.h>
 
 #include <algorithm>
 #include <chrono>
+#include <exception>
 #include <format>
 #include <memory>
 #include <optional>
@@ -236,6 +237,219 @@ void write_csv(const std::filesystem::path &file,
     StatisticsReporter{}.write_csv(file, entries);
 }
 
+[[nodiscard]] std::vector<std::unique_ptr<ExecutionGraph>>
+create_replica_graphs(
+    const ConfigGraph &config,
+    const std::vector<ConfigGraph> &replica_configs,
+    const IWorkerFactory &worker_factory,
+    const CyclicQueueFactory &queue_factory,
+    std::size_t sweep_point) {
+    const auto replica_count = config.runtime().threads;
+    if (!replica_configs.empty() && replica_configs.size() != replica_count) {
+        throw std::invalid_argument(
+            "replica configuration count does not match runtime threads");
+    }
+
+    std::vector<std::unique_ptr<ExecutionGraph>> graphs;
+    graphs.reserve(replica_count);
+    if (replica_configs.empty()) {
+        const auto plan = GraphCompiler{}.compile(config, worker_factory);
+        for (std::size_t replica{}; replica < replica_count; ++replica) {
+            graphs.push_back(std::make_unique<ExecutionGraph>(config,
+                plan,
+                queue_factory,
+                sweep_point,
+                replica));
+        }
+    } else {
+        std::optional<ExecutionPlan> reference_plan;
+        for (std::size_t replica{}; replica < replica_count; ++replica) {
+            const auto &replica_config = replica_configs[replica];
+            const auto plan =
+                GraphCompiler{}.compile(replica_config, worker_factory);
+            if (reference_plan) {
+                validate_replica_plan(*reference_plan, plan);
+            } else {
+                reference_plan = plan;
+            }
+            graphs.push_back(std::make_unique<ExecutionGraph>(replica_config,
+                plan,
+                queue_factory,
+                sweep_point,
+                replica));
+        }
+    }
+    return graphs;
+}
+
+void run_replica(ExecutionGraph &graph,
+    const ConfigGraph &config,
+    StatisticsRegistry &registry,
+    std::size_t replica,
+    std::stop_token token) {
+    const auto publication_interval = std::chrono::duration<double>(
+        config.runtime().statistics.publish_interval_seconds);
+    auto next_publish = std::chrono::steady_clock::now() + publication_interval;
+    std::size_t sweeps{};
+    const auto publish = [&](bool finished, std::exception_ptr error = {}) {
+        registry.publish(collect_graph_statistics(
+            replica, sweeps, finished, error, config, graph));
+    };
+
+    try {
+        publish(false);
+        const auto result = ReplicaExecutor{}.run(graph,
+            token,
+            [&](std::size_t completed_sweeps, bool) {
+                sweeps = completed_sweeps;
+                const auto now = std::chrono::steady_clock::now();
+                if (publication_interval.count() == 0.0 ||
+                    now >= next_publish) {
+                    publish(false);
+                    next_publish = now + publication_interval;
+                }
+                return false;
+            });
+        sweeps = result.sweeps;
+        publish(true);
+    } catch (...) {
+        try {
+            publish(true, std::current_exception());
+        } catch (...) {
+            registry.publish(
+                {replica, sweeps, true, std::current_exception(), {}});
+        }
+    }
+}
+
+[[nodiscard]] std::vector<std::jthread> launch_replicas(
+    const std::vector<std::unique_ptr<ExecutionGraph>> &graphs,
+    const ConfigGraph &config,
+    StatisticsRegistry &registry) {
+    std::vector<std::jthread> threads;
+    threads.reserve(graphs.size());
+    for (std::size_t replica{}; replica < graphs.size(); ++replica) {
+        threads.emplace_back(
+            [graph = graphs[replica].get(), &config, &registry, replica](
+                std::stop_token token) {
+                run_replica(*graph, config, registry, replica, token);
+            });
+    }
+    return threads;
+}
+
+void stop_and_join_replicas(std::vector<std::jthread> &threads) {
+    for (auto &thread : threads) {
+        thread.request_stop();
+    }
+    for (auto &thread : threads) {
+        thread.join();
+    }
+}
+
+[[nodiscard]] std::exception_ptr replica_error(
+    const std::vector<GraphStatisticsSnapshot> &snapshots) {
+    const auto failed = std::ranges::find_if(snapshots,
+        [](const GraphStatisticsSnapshot &snapshot) {
+            return snapshot.error != nullptr;
+        });
+    return failed != snapshots.end() ? failed->error : nullptr;
+}
+
+struct MonitoringResult {
+    RunTermination termination = RunTermination::quiescent;
+    std::size_t terminal_report_lines{};
+    std::uint64_t generation{};
+};
+
+[[nodiscard]] MonitoringResult monitor_replicas(const ConfigGraph &config,
+    const StatisticsRegistry &registry,
+    std::vector<AggregateProvider> &providers,
+    const std::vector<std::size_t> &stop_providers,
+    std::ostream &output,
+    std::string_view report_context,
+    std::chrono::steady_clock::time_point report_start) {
+    StopController stop(stop_providers.size(), config.runtime().stop.policy);
+    const auto &terminal = config.runtime().reporting.terminal;
+    const auto terminal_interval =
+        std::chrono::duration<double>(terminal.interval_seconds);
+    auto next_report = report_start + terminal_interval;
+    MonitoringResult result;
+    while (true) {
+        registry.wait_for_change(result.generation);
+        const auto snapshots = registry.collect(result.generation);
+        if (snapshots.size() != config.runtime().threads) {
+            continue;
+        }
+        if (replica_error(snapshots)) {
+            return result;
+        }
+
+        refresh_aggregates(providers, snapshots);
+        update_stop(providers, stop_providers, stop);
+        const auto now = std::chrono::steady_clock::now();
+        if (terminal.enabled &&
+            (terminal.interval_seconds == 0.0 || now >= next_report)) {
+            result.terminal_report_lines = write_table(output,
+                terminal,
+                providers,
+                false,
+                report_context,
+                result.terminal_report_lines);
+            next_report = now + terminal_interval;
+        }
+
+        if (stop.stop_requested()) {
+            result.termination = RunTermination::statistics_satisfied;
+            return result;
+        }
+        if (std::ranges::all_of(snapshots,
+                [](const GraphStatisticsSnapshot &snapshot) {
+                    return snapshot.finished;
+                })) {
+            result.termination =
+                stop_providers.empty()
+                    ? RunTermination::quiescent
+                    : RunTermination::quiescent_before_statistics;
+            return result;
+        }
+    }
+}
+
+[[nodiscard]] RunResult finalize_replicas(const ConfigGraph &config,
+    const StatisticsRegistry &registry,
+    std::vector<AggregateProvider> &providers,
+    const std::filesystem::path &statistics_directory,
+    std::ostream &output,
+    std::string_view report_context,
+    MonitoringResult monitor) {
+    const auto snapshots = registry.collect(monitor.generation);
+    if (const auto error = replica_error(snapshots)) {
+        std::rethrow_exception(error);
+    }
+    if (snapshots.size() != config.runtime().threads) {
+        throw std::logic_error(
+            "not every graph replica published final statistics");
+    }
+    refresh_aggregates(providers, snapshots);
+    static_cast<void>(write_table(output,
+        config.runtime().reporting.terminal,
+        providers,
+        true,
+        report_context,
+        monitor.terminal_report_lines));
+
+    std::filesystem::create_directories(statistics_directory);
+    const auto statistics_file = next_statistics_file(statistics_directory);
+    write_csv(statistics_file, providers);
+
+    std::size_t sweeps{};
+    for (const auto &snapshot : snapshots) {
+        sweeps = std::max(sweeps, snapshot.sweeps);
+    }
+    return {monitor.termination, sweeps, statistics_file};
+}
+
 } // namespace
 
 Coordinator::Coordinator(const IWorkerFactory &worker_factory,
@@ -303,7 +517,8 @@ SweepResult Coordinator::run_sweep(const ConfigGraph &config) const {
         auto run = run_replicas(point_config,
             replica_configs,
             directory,
-            sweep_context(point));
+            sweep_context(point),
+            point.index);
         result.points.push_back({point.index,
             public_values(point.parameters),
             std::move(public_replicas),
@@ -315,184 +530,31 @@ SweepResult Coordinator::run_sweep(const ConfigGraph &config) const {
 RunResult Coordinator::run_replicas(const ConfigGraph &config,
     const std::vector<ConfigGraph> &replica_configs,
     const std::filesystem::path &statistics_directory,
-    std::string report_context) const {
-    if (!replica_configs.empty() &&
-        replica_configs.size() != config.runtime().threads) {
-        throw std::invalid_argument(
-            "replica configuration count does not match runtime threads");
-    }
-
-    std::vector<std::unique_ptr<ExecutionGraph>> graphs;
-    graphs.reserve(config.runtime().threads);
-
-    if (replica_configs.empty()) {
-        const ExecutionPlan plan =
-            GraphCompiler{}.compile(config, worker_factory_);
-        for (std::size_t replica = 0; replica < config.runtime().threads;
-            ++replica) {
-            graphs.push_back(
-                std::make_unique<ExecutionGraph>(config, plan, queue_factory_));
-        }
-    } else {
-        std::optional<ExecutionPlan> reference_plan;
-        for (const auto &replica_config : replica_configs) {
-            auto plan =
-                GraphCompiler{}.compile(replica_config, worker_factory_);
-            if (reference_plan) {
-                validate_replica_plan(*reference_plan, plan);
-            } else {
-                reference_plan = plan;
-            }
-            graphs.push_back(std::make_unique<ExecutionGraph>(replica_config,
-                plan,
-                queue_factory_));
-        }
-    }
-
+    std::string report_context,
+    std::size_t sweep_point) const {
+    const auto graphs = create_replica_graphs(
+        config, replica_configs, worker_factory_, queue_factory_, sweep_point);
     auto providers = discover_aggregates(config, graphs);
     const auto stop_providers = validate_stop_observers(config, providers);
-    StopController stop(stop_providers.size(), config.runtime().stop.policy);
 
-    const auto terminal_interval = std::chrono::duration<double>(
-        config.runtime().reporting.terminal.interval_seconds);
-    const auto publication_interval = std::chrono::duration<double>(
-        config.runtime().statistics.publish_interval_seconds);
-    auto next_report = std::chrono::steady_clock::now() + terminal_interval;
-    std::size_t terminal_report_lines{};
+    const auto report_start = std::chrono::steady_clock::now();
     StatisticsRegistry registry(graphs.size());
-    std::vector<std::jthread> threads;
-    threads.reserve(graphs.size());
-
-    for (std::size_t replica{}; replica < graphs.size(); ++replica) {
-        threads.emplace_back([&, replica](std::stop_token token) {
-            auto &graph = *graphs[replica];
-            std::size_t sweeps{};
-            auto next_publish =
-                std::chrono::steady_clock::now() + publication_interval;
-            const auto publish = [&](bool finished,
-                                     std::exception_ptr error = {}) {
-                registry.publish(collect_graph_statistics(replica,
-                    sweeps,
-                    finished,
-                    error,
-                    config,
-                    graph));
-            };
-
-            try {
-                publish(false);
-                const auto result = ReplicaExecutor{}.run(graph,
-                    token,
-                    [&](std::size_t completed_sweeps, bool) {
-                        sweeps = completed_sweeps;
-                        const auto now = std::chrono::steady_clock::now();
-                        if (config.runtime()
-                                    .statistics.publish_interval_seconds ==
-                                0.0 ||
-                            now >= next_publish) {
-                            publish(false);
-                            next_publish = now + publication_interval;
-                        }
-                        return false;
-                    });
-                sweeps = result.sweeps;
-                publish(true);
-            } catch (...) {
-                try {
-                    publish(true, std::current_exception());
-                } catch (...) {
-                    registry.publish(
-                        {replica, sweeps, true, std::current_exception(), {}});
-                }
-            }
-        });
-    }
-
-    std::uint64_t generation{};
-    std::vector<GraphStatisticsSnapshot> snapshots;
-    RunTermination termination = RunTermination::quiescent;
-
-    while (true) {
-        registry.wait_for_change(generation);
-        snapshots = registry.collect(generation);
-        if (snapshots.size() != graphs.size()) {
-            continue;
-        }
-
-        const auto failed = std::ranges::find_if(snapshots,
-            [](const GraphStatisticsSnapshot &snapshot) {
-                return snapshot.error != nullptr;
-            });
-        if (failed != snapshots.end()) {
-            break;
-        }
-
-        refresh_aggregates(providers, snapshots);
-        update_stop(providers, stop_providers, stop);
-        const auto now = std::chrono::steady_clock::now();
-        const auto &terminal = config.runtime().reporting.terminal;
-        if (terminal.enabled &&
-            (terminal.interval_seconds == 0.0 || now >= next_report)) {
-            terminal_report_lines = write_table(terminal_,
-                terminal,
-                providers,
-                false,
-                report_context,
-                terminal_report_lines);
-            next_report = now + terminal_interval;
-        }
-
-        if (stop.stop_requested()) {
-            termination = RunTermination::statistics_satisfied;
-            break;
-        }
-        if (std::ranges::all_of(snapshots,
-                [](const GraphStatisticsSnapshot &snapshot) {
-                    return snapshot.finished;
-                })) {
-            termination = stop_providers.empty()
-                              ? RunTermination::quiescent
-                              : RunTermination::quiescent_before_statistics;
-            break;
-        }
-    }
-
-    for (auto &thread : threads) {
-        thread.request_stop();
-    }
-    for (auto &thread : threads) {
-        thread.join();
-    }
-
-    snapshots = registry.collect(generation);
-    const auto failed = std::ranges::find_if(snapshots,
-        [](const GraphStatisticsSnapshot &snapshot) {
-            return snapshot.error != nullptr;
-        });
-    if (failed != snapshots.end()) {
-        std::rethrow_exception(failed->error);
-    }
-    if (snapshots.size() != graphs.size()) {
-        throw std::logic_error(
-            "not every graph replica published final statistics");
-    }
-    refresh_aggregates(providers, snapshots);
-    static_cast<void>(write_table(terminal_,
-        config.runtime().reporting.terminal,
+    auto threads = launch_replicas(graphs, config, registry);
+    const auto result = monitor_replicas(config,
+        registry,
         providers,
-        true,
+        stop_providers,
+        terminal_,
         report_context,
-        terminal_report_lines));
-
-    std::filesystem::create_directories(statistics_directory);
-    const auto statistics_file = next_statistics_file(statistics_directory);
-    write_csv(statistics_file, providers);
-
-    std::size_t sweeps{};
-    for (const auto &snapshot : snapshots) {
-        sweeps = std::max(sweeps, snapshot.sweeps);
-    }
-    return {termination, sweeps, statistics_file};
+        report_start);
+    stop_and_join_replicas(threads);
+    return finalize_replicas(config,
+        registry,
+        providers,
+        statistics_directory,
+        terminal_,
+        report_context,
+        result);
 }
 
 } // namespace dataflow

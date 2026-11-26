@@ -1,8 +1,8 @@
 #pragma once
 
-#include <graphs/sweep.h>
-#include <interfaces/stop_token.h>
-#include <storage/queue_types.h>
+#include <dataflow/graphs/sweep.h>
+#include <dataflow/interfaces/stop_token.h>
+#include <dataflow/storage/queue_types.h>
 
 #include <cstddef>
 #include <cstdint>

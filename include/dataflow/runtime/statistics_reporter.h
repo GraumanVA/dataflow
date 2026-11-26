@@ -1,7 +1,7 @@
 #pragma once
 
-#include <graphs/config_graph.h>
-#include <interfaces/statistics.h>
+#include <dataflow/graphs/config_graph.h>
+#include <dataflow/interfaces/statistics.h>
 
 #include <filesystem>
 #include <iosfwd>

@@ -19,6 +19,7 @@ namespace dataflow {
 
 struct WorkerTestHarnessOptions {
     std::size_t queue_capacity_transactions = 2;
+    WorkerContext context{};
 };
 
 template <class Implementation>
@@ -138,7 +139,9 @@ public:
         } else {
             worker_ = std::make_unique<Implementation>(config, ports_);
         }
-        worker_->bind({inputs_, outputs_, ports_});
+        auto &worker = static_cast<IWorker &>(*worker_);
+        worker.initialize_random_streams(options.context);
+        worker.bind({inputs_, outputs_, ports_});
     }
 
     [[nodiscard]] const WorkerPorts &ports() const noexcept {

@@ -2,10 +2,11 @@
 
 #include <dataflow/run_result.h>
 #include <dataflow/sweep_result.h>
-#include <graphs/config_graph.h>
-#include <interfaces/worker_factory.h>
-#include <storage/cyclic_queue.h>
+#include <dataflow/graphs/config_graph.h>
+#include <dataflow/interfaces/worker_factory.h>
+#include <dataflow/storage/cyclic_queue.h>
 
+#include <cstddef>
 #include <filesystem>
 #include <iosfwd>
 #include <vector>
@@ -21,7 +22,8 @@ class Coordinator {
     [[nodiscard]] RunResult run_replicas(const ConfigGraph &config,
         const std::vector<ConfigGraph> &replica_configs,
         const std::filesystem::path &statistics_directory,
-        std::string report_context = {}) const;
+        std::string report_context = {},
+        std::size_t sweep_point = 0) const;
 
 public:
     Coordinator(const IWorkerFactory &worker_factory,

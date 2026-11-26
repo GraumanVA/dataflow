@@ -1,4 +1,4 @@
-#include <runtime/statistics_registry.h>
+#include <dataflow/runtime/statistics_registry.h>
 
 #include <stdexcept>
 #include <utility>

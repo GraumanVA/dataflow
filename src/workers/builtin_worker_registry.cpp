@@ -1,6 +1,6 @@
-#include <workers/ber_observer.h>
-#include <workers/broadcaster.h>
-#include <workers/builtin_worker_registry.h>
+#include <dataflow/workers/ber_observer.h>
+#include <dataflow/workers/broadcaster.h>
+#include <dataflow/workers/builtin_worker_registry.h>
 
 namespace dataflow {
 

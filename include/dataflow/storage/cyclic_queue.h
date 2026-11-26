@@ -1,7 +1,7 @@
 #pragma once
 
-#include <interfaces/iqueue.h>
-#include <storage/queue_types.h>
+#include <dataflow/interfaces/iqueue.h>
+#include <dataflow/storage/queue_types.h>
 
 #include <cassert>
 #include <complex>

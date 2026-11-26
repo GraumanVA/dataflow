@@ -3,11 +3,15 @@
 #include <dataflow/worker_registry.h>
 #include <dataflow/worker_test.h>
 
+#include <gtest/gtest.h>
+
 #include <cstdint>
 #include <memory>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -166,100 +170,91 @@ protected:
     }
 };
 
-void require(bool condition, const char *message) {
-    if (!condition) {
-        throw std::runtime_error(message);
-    }
-}
-
-} // namespace
-
-int main() {
+TEST(WorkerContract, UnboundWorkerCannotProcess) {
     const Config config;
     auto ports =
         std::make_shared<const dataflow::WorkerPorts>(Worker::ports(config));
     Worker worker(config, ports);
-    require(!worker.is_ready(), "unbound worker reported ready");
-    require(!worker.process_one(), "unbound worker processed a transaction");
+    EXPECT_FALSE(worker.is_ready());
+    EXPECT_FALSE(worker.process_one());
+}
 
+TEST(WorkerContract, RegistryPreparesWorkersAndRejectsInvalidRegistration) {
     dataflow::WorkerRegistry registry;
     registry.register_worker<Worker>("worker");
-    require(registry.contains("worker"), "registered worker was not listed");
-    require(registry.registered_types() == std::vector<std::string>{"worker"},
-        "registered worker type list was incorrect");
+    EXPECT_TRUE(registry.contains("worker"));
+    EXPECT_EQ(registry.registered_types(), std::vector<std::string>{"worker"});
     const auto prepared =
         registry.prepare("worker", YAML::Load("transaction_size: 1"));
-    require(prepared.ports->inputs.size() == 1,
-        "worker without validate was not prepared");
-    try {
+    EXPECT_EQ(prepared.ports->inputs.size(), 1u);
+    EXPECT_THROW(
         static_cast<void>(registry.prepare("worker",
-            YAML::Load("transaction_size: 1\nunknown: true")));
-        throw std::runtime_error("unknown worker parameter was accepted");
-    } catch (const std::invalid_argument &) {
-    }
-    try {
-        registry.register_worker<Worker>("worker");
-        throw std::runtime_error("duplicate registration was accepted");
-    } catch (const std::invalid_argument &) {
-    }
+            YAML::Load("transaction_size: 1\nunknown: true"))),
+        std::invalid_argument);
+    EXPECT_THROW(registry.register_worker<Worker>("worker"),
+        std::invalid_argument);
+}
 
+TEST(WorkerContract, AppliesDefaultWorkerParameters) {
+    dataflow::WorkerRegistry registry;
     registry.register_worker<FacadeSource>("facade_source");
     const auto defaulted_facade =
         registry.prepare("facade_source", YAML::Load("transactions: 1"));
-    require(defaulted_facade.ports->outputs[0].transaction_size == 1,
-        "default worker parameter was not applied");
+    ASSERT_EQ(defaulted_facade.ports->outputs.size(), 1u);
+    EXPECT_EQ(defaulted_facade.ports->outputs[0].transaction_size, 1u);
     auto default_output =
         std::make_shared<dataflow::CyclicQueue<std::int32_t>>(1, 1);
     auto defaulted_worker = defaulted_facade.create();
     defaulted_worker->bind({{}, {default_output}, defaulted_facade.ports});
-    require(defaulted_worker->process_one(),
-        "worker with default parameters made no progress");
+    ASSERT_TRUE(defaulted_worker->process_one());
     auto default_read = default_output->begin_read_exact(1);
-    require(default_read.spans()[0] == 0,
-        "default worker parameter had the wrong value");
+    EXPECT_EQ(default_read.spans()[0], 0);
+}
 
+TEST(WorkerContract, CombinesQueueReadinessWithSourceReadiness) {
+    dataflow::WorkerRegistry registry;
+    registry.register_worker<FacadeSource>("facade_source");
     const auto facade = registry.prepare("facade_source",
         YAML::Load("transaction_size: 2\ntransactions: 1\nvalue: 7"));
-    require(facade.ports->inputs.empty(),
-        "facade source unexpectedly declared an input");
-    require(facade.ports->outputs.size() == 1,
-        "facade source output layout was not prepared");
+    EXPECT_TRUE(facade.ports->inputs.empty());
+    ASSERT_EQ(facade.ports->outputs.size(), 1u);
 
     auto output = std::make_shared<dataflow::CyclicQueue<std::int32_t>>(2, 0);
     auto facade_worker = facade.create();
-    require(!facade_worker->is_ready(), "unbound facade worker reported ready");
+    EXPECT_FALSE(facade_worker->is_ready());
     facade_worker->bind({{}, {output}, facade.ports});
-    require(facade_worker->process_one(),
-        "facade source did not process its configured transaction");
-    require(!facade_worker->process_one(),
-        "facade source readiness was not composed with can_process");
+    ASSERT_TRUE(facade_worker->process_one());
+    EXPECT_FALSE(facade_worker->process_one());
 
     auto output_read = output->begin_read_exact(2);
-    require(output_read.spans()[0] == 7 && output_read.spans()[1] == 7,
-        "facade source produced incorrect output");
+    EXPECT_EQ(output_read.spans()[0], 7);
+    EXPECT_EQ(output_read.spans()[1], 7);
+}
 
+TEST(WorkerContract, HarnessProcessesHeterogeneousPorts) {
     dataflow::WorkerTestHarness<TypedFacade> harness(TypedFacadeConfig{});
     harness.write_input<std::int32_t>("integers", {2, -4});
     harness.write_input<float>("fractions", {0.25F, 0.5F});
-    require(harness.is_ready(), "typed facade harness was not ready");
-    require(harness.process_one(), "typed facade harness made no progress");
-    require(harness.output_size<float>("scaled_sum") == 2,
-        "typed facade harness reported the wrong output size");
-    require(harness.read_output<float>("scaled_sum") ==
-                std::vector<float>{1.25F, -1.5F},
-        "typed facade produced incorrect float output");
-    require(harness.read_output<std::uint8_t>("positive") ==
-                std::vector<std::uint8_t>{1, 0},
-        "typed facade produced incorrect integer output");
+    EXPECT_TRUE(harness.is_ready());
+    ASSERT_TRUE(harness.process_one());
+    EXPECT_EQ(harness.output_size<float>("scaled_sum"), 2u);
+    EXPECT_EQ(harness.read_output<float>("scaled_sum"),
+        (std::vector<float>{1.25F, -1.5F}));
+    EXPECT_EQ(harness.read_output<std::uint8_t>("positive"),
+        (std::vector<std::uint8_t>{1, 0}));
+}
 
+TEST(WorkerContract, ObserverCreatesEmptyAggregationInstance) {
     dataflow::WorkerTestHarness<TypedObserverProbe> observer(
         TypedObserverConfig{});
     observer.write_input<std::int32_t>("integers", {1, 2});
     observer.write_input<float>("fractions", {0.25F, 0.75F});
-    require(observer.process_one(), "typed observer facade made no progress");
-    require(observer.worker().total() == 4.0F,
-        "typed observer facade accumulated the wrong value");
+    ASSERT_TRUE(observer.process_one());
+    EXPECT_FLOAT_EQ(observer.worker().total(), 4.0F);
     const auto empty = observer.worker().make_empty();
-    require(empty->statistics().front().value == "0.000000",
-        "typed observer facade did not create an empty aggregation instance");
+    const auto statistics = empty->statistics();
+    ASSERT_FALSE(statistics.empty());
+    EXPECT_EQ(statistics.front().value, "0.000000");
 }
+
+} // namespace

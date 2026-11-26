@@ -1,14 +1,15 @@
 #include <dataflow/worker_registry.h>
 #include <dataflow/worker_test.h>
-#include <graphs/execution_graph.h>
-#include <runtime/coordinator.h>
-#include <workers/ber_observer.h>
-#include <workers/broadcaster.h>
+#include <dataflow/graphs/execution_graph.h>
+#include <dataflow/runtime/coordinator.h>
+#include <dataflow/workers/ber_observer.h>
+#include <dataflow/workers/broadcaster.h>
+
+#include <gtest/gtest.h>
 
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <iterator>
 #include <memory>
 #include <sstream>
@@ -17,12 +18,6 @@
 #include <vector>
 
 namespace {
-
-void require(bool condition, const char *message) {
-    if (!condition) {
-        throw std::runtime_error(message);
-    }
-}
 
 struct SourceConfig {
     std::size_t transaction_size = 1;
@@ -144,21 +139,18 @@ private:
     }
 };
 
-void test_mixed_type_worker() {
+TEST(RuntimeFeatures, ExecutesWorkersWithMixedPortTypes) {
     dataflow::WorkerRegistry workers;
     workers.register_worker<MixedTypeWorker>("mixed");
     const auto prepared =
         workers.prepare("mixed", YAML::Load("transaction_size: 2"));
 
-    require(prepared.ports->inputs.size() == 2,
-        "mixed worker input layout was not prepared");
-    require(prepared.ports->outputs.size() == 2,
-        "mixed worker output layout was not prepared");
-    require(prepared.ports->inputs[0].type == dataflow::ScalarType::i32 &&
-                prepared.ports->inputs[1].type == dataflow::ScalarType::f32 &&
-                prepared.ports->outputs[0].type == dataflow::ScalarType::f32 &&
-                prepared.ports->outputs[1].type == dataflow::ScalarType::u8,
-        "mixed worker port types were not preserved");
+    ASSERT_EQ(prepared.ports->inputs.size(), 2u);
+    ASSERT_EQ(prepared.ports->outputs.size(), 2u);
+    EXPECT_EQ(prepared.ports->inputs[0].type, dataflow::ScalarType::i32);
+    EXPECT_EQ(prepared.ports->inputs[1].type, dataflow::ScalarType::f32);
+    EXPECT_EQ(prepared.ports->outputs[0].type, dataflow::ScalarType::f32);
+    EXPECT_EQ(prepared.ports->outputs[1].type, dataflow::ScalarType::u8);
 
     auto integers = std::make_shared<dataflow::CyclicQueue<std::int32_t>>(2, 0);
     auto fractions = std::make_shared<dataflow::CyclicQueue<float>>(2, 1);
@@ -178,17 +170,17 @@ void test_mixed_type_worker() {
 
     auto worker = prepared.create();
     worker->bind({{integers, fractions}, {sums, positive}});
-    require(worker->process_one(), "mixed worker made no progress");
+    ASSERT_TRUE(worker->process_one());
 
     auto sum_read = sums->begin_read_exact(2);
     auto positive_read = positive->begin_read_exact(2);
-    require(sum_read.spans()[0] == 1.5F && sum_read.spans()[1] == -1.75F,
-        "mixed worker produced incorrect float output");
-    require(positive_read.spans()[0] == 1 && positive_read.spans()[1] == 0,
-        "mixed worker produced incorrect integer output");
+    EXPECT_FLOAT_EQ(sum_read.spans()[0], 1.5F);
+    EXPECT_FLOAT_EQ(sum_read.spans()[1], -1.75F);
+    EXPECT_EQ(positive_read.spans()[0], 1);
+    EXPECT_EQ(positive_read.spans()[1], 0);
 }
 
-void test_broadcaster_delivery() {
+TEST(RuntimeFeatures, BroadcasterSkipsFullBestEffortQueue) {
     auto input = std::make_shared<dataflow::CyclicQueue<std::uint8_t>>(4, 0);
     auto reliable = std::make_shared<dataflow::CyclicQueue<std::uint8_t>>(4, 1);
     auto best_effort =
@@ -215,28 +207,25 @@ void test_broadcaster_delivery() {
     dataflow::Broadcaster<std::uint8_t> broadcaster(broadcaster_config,
         broadcaster_ports);
     broadcaster.bind({{input}, {reliable, best_effort}});
-    require(broadcaster.process_one(), "broadcaster made no progress");
-    require(input->empty(), "broadcaster did not consume its input");
-    require(reliable->elems_stored() == 2,
-        "reliable broadcaster output was not written");
-
-    require(best_effort->elems_stored() == 2,
-        "best-effort output should have skipped a full queue");
+    ASSERT_TRUE(broadcaster.process_one());
+    EXPECT_TRUE(input->empty());
+    EXPECT_EQ(reliable->elems_stored(), 2u);
+    EXPECT_EQ(best_effort->elems_stored(), 2u);
 }
 
-void test_stop_policies() {
+TEST(RuntimeFeatures, StopPoliciesApplyAnyAndAllCriteria) {
     dataflow::StopController any(2, dataflow::StopPolicy::any);
     any.update(0, true);
-    require(any.stop_requested(), "any stop policy did not stop");
+    EXPECT_TRUE(any.stop_requested());
 
     dataflow::StopController all(2, dataflow::StopPolicy::all);
     all.update(0, true);
-    require(!all.stop_requested(), "all stop policy stopped too early");
+    EXPECT_FALSE(all.stop_requested());
     all.update(1, true);
-    require(all.stop_requested(), "all stop policy did not stop");
+    EXPECT_TRUE(all.stop_requested());
 }
 
-void test_confidence_criterion() {
+TEST(BerObserver, SatisfiesConfidenceCriterionAndMergesTotals) {
     constexpr std::size_t elements = 1000;
     auto reference =
         std::make_shared<dataflow::CyclicQueue<std::uint8_t>>(elements, 0);
@@ -265,9 +254,8 @@ void test_confidence_criterion() {
         dataflow::BerObserver<std::uint8_t>::ports(observer_config));
     dataflow::BerObserver<std::uint8_t> observer(observer_config);
     observer.bind({{reference, received}, {}, observer_ports});
-    require(observer.process_one(), "BER observer made no progress");
-    require(observer.criterion_satisfied(),
-        "BER confidence criterion was not satisfied");
+    ASSERT_TRUE(observer.process_one());
+    EXPECT_TRUE(observer.criterion_satisfied());
 
     auto second_reference =
         std::make_shared<dataflow::CyclicQueue<std::uint8_t>>(elements, 2);
@@ -285,11 +273,14 @@ void test_confidence_criterion() {
     }
     dataflow::BerObserver<std::uint8_t> second(observer_config);
     second.bind({{second_reference, second_received}, {}, observer_ports});
-    require(second.process_one(), "second BER observer made no progress");
+    ASSERT_TRUE(second.process_one());
     observer.merge_from(second);
-    require(observer.statistics()[0].value == "16000",
-        "BER observer merge did not add accumulator totals");
+    const auto statistics = observer.statistics();
+    ASSERT_FALSE(statistics.empty());
+    EXPECT_EQ(statistics[0].value, "16000");
+}
 
+TEST(BerObserver, CountsOneLogicalBitPerUnpackedElement) {
     const dataflow::BerObserverConfig unpacked_config{
         .transaction_size = 4,
         .bits_per_element = 1,
@@ -299,16 +290,15 @@ void test_confidence_criterion() {
         unpacked_config);
     unpacked.write_input<std::int8_t>("reference", {0, 1, 0, 1});
     unpacked.write_input<std::int8_t>("received", {1, 1, 1, 1});
-    require(unpacked.process_one(), "unpacked BER observer made no progress");
+    ASSERT_TRUE(unpacked.process_one());
     const auto unpacked_statistics = unpacked.worker().statistics();
-    require(unpacked_statistics[0].value == "4" &&
-                unpacked_statistics[1].value == "2" &&
-                unpacked_statistics[2].value == "5.000000e-01" &&
-                unpacked_statistics.size() == 3,
-        "unpacked BER observer did not count one logical bit per element");
+    ASSERT_EQ(unpacked_statistics.size(), 3u);
+    EXPECT_EQ(unpacked_statistics[0].value, "4");
+    EXPECT_EQ(unpacked_statistics[1].value, "2");
+    EXPECT_EQ(unpacked_statistics[2].value, "5.000000e-01");
 }
 
-void test_coordinator_results() {
+TEST(Coordinator, MergesReplicaTotalsAndPreservesExistingReports) {
     const std::filesystem::path config_path = "coordinator_test.yaml";
     const std::filesystem::path statistics_root = "coordinator_statistics_test";
     std::filesystem::remove_all(statistics_root);
@@ -366,22 +356,13 @@ edges:
     const auto first = coordinator.run(config_path);
     const auto second = coordinator.run(config_path);
 
-    require(first.statistics_file.filename() == "stats.csv",
-        "coordinator did not choose stats.csv initially");
-    require(second.statistics_file.filename() == "stats_2.csv",
-        "coordinator did not increment an existing report name");
-    if (FiniteSource::validation_calls() != 4) {
-        throw std::runtime_error(
-            "worker configuration validation count was " +
-            std::to_string(FiniteSource::validation_calls()) +
-            ", expected 4 (once per configured node per run)");
-    }
-    require(FiniteSource::construction_calls() == 8,
-        "coordinator did not construct every prepared worker replica");
+    EXPECT_EQ(first.statistics_file.filename(), "stats.csv");
+    EXPECT_EQ(second.statistics_file.filename(), "stats_2.csv");
+    EXPECT_EQ(FiniteSource::validation_calls(), 4u);
+    EXPECT_EQ(FiniteSource::construction_calls(), 8u);
     std::ifstream report(first.statistics_file);
     const std::string contents((std::istreambuf_iterator<char>(report)), {});
-    require(contents.find("ber,bits,640") != std::string::npos,
-        "coordinator did not merge replica BER totals");
+    EXPECT_NE(contents.find("ber,bits,640"), std::string::npos);
     report.close();
 
     std::filesystem::remove(first.statistics_file);
@@ -391,7 +372,7 @@ edges:
     std::filesystem::remove(config_path);
 }
 
-void test_sweep_results() {
+TEST(Coordinator, ReportsSweepPointsAndReplicaParameters) {
     const std::filesystem::path config_path = "sweep_test.yaml";
     const std::filesystem::path statistics_root = "sweep_statistics_test";
     std::filesystem::remove_all(statistics_root);
@@ -463,47 +444,44 @@ sweep:
         terminal);
     const auto sweep = coordinator.run_sweep(config_path);
 
-    require(sweep.points.size() == 2,
-        "coordinator produced the wrong number of sweep points");
-    require(sweep.points[0].parameters[0].name == "offset" &&
-                sweep.points[0].parameters[0].value == "0" &&
-                sweep.points[0].parameters[0].display_name == "off" &&
-                sweep.points[0].parameters[1].name == "case_id" &&
-                sweep.points[0].parameters[1].value == "100" &&
-                sweep.points[0].parameters[1].display_name == "id",
-        "sweep point parameters were not reported");
-    require(sweep.points[0].replicas.size() == 2 &&
-                sweep.points[0].replicas[0].parameters[0].value == "0" &&
-                sweep.points[0].replicas[1].parameters[0].value == "1",
-        "replica-derived parameters were not reported");
-    require(sweep.points[0].run.statistics_file.parent_path().filename() ==
-                    "case_0000__off=0__id=100" &&
-                sweep.points[1].run.statistics_file.parent_path().filename() ==
-                    "case_0001__off=1__id=110",
-        "sweep statistics were not separated by point");
-    require(terminal.str().find("[Sweep case 0: off=0, id=100]") !=
-                    std::string::npos &&
-                terminal.str().find("[Sweep case 1: off=1, id=110]") !=
-                    std::string::npos &&
-                terminal.str().find("\x1b[H\x1b[J") == std::string::npos,
-        "sweep terminal tables lost their context or cleared prior cases");
+    ASSERT_EQ(sweep.points.size(), 2u);
+    const auto &first = sweep.points[0];
+    const auto &second = sweep.points[1];
+    ASSERT_EQ(first.parameters.size(), 2u);
+    EXPECT_EQ(first.parameters[0].name, "offset");
+    EXPECT_EQ(first.parameters[0].value, "0");
+    EXPECT_EQ(first.parameters[0].display_name, "off");
+    EXPECT_EQ(first.parameters[1].name, "case_id");
+    EXPECT_EQ(first.parameters[1].value, "100");
+    EXPECT_EQ(first.parameters[1].display_name, "id");
+    ASSERT_EQ(first.replicas.size(), 2u);
+    ASSERT_EQ(first.replicas[0].parameters.size(), 1u);
+    ASSERT_EQ(first.replicas[1].parameters.size(), 1u);
+    EXPECT_EQ(first.replicas[0].parameters[0].value, "0");
+    EXPECT_EQ(first.replicas[1].parameters[0].value, "1");
+    EXPECT_EQ(first.run.statistics_file.parent_path().filename(),
+        "case_0000__off=0__id=100");
+    EXPECT_EQ(second.run.statistics_file.parent_path().filename(),
+        "case_0001__off=1__id=110");
+    const auto output = terminal.str();
+    EXPECT_NE(output.find("[Sweep case 0: off=0, id=100]"), std::string::npos);
+    EXPECT_NE(output.find("[Sweep case 1: off=1, id=110]"), std::string::npos);
+    EXPECT_EQ(output.find("\x1b[H\x1b[J"), std::string::npos);
 
-    std::ifstream first_report(sweep.points[0].run.statistics_file);
-    std::ifstream second_report(sweep.points[1].run.statistics_file);
+    std::ifstream first_report(first.run.statistics_file);
+    std::ifstream second_report(second.run.statistics_file);
     const std::string first_contents(
         (std::istreambuf_iterator<char>(first_report)),
         {});
     const std::string second_contents(
         (std::istreambuf_iterator<char>(second_report)),
         {});
-    require(first_contents.find("ber,bits,64") != std::string::npos &&
-                first_contents.find("ber,bit_errors,1") != std::string::npos &&
-                first_contents.find("ci_lower") == std::string::npos,
-        "first sweep point did not merge replica statistics");
-    require(second_contents.find("ber,bits,64") != std::string::npos &&
-                second_contents.find("ber,bit_errors,2") != std::string::npos &&
-                second_contents.find("ci_lower") == std::string::npos,
-        "second sweep point statistics were not independent");
+    EXPECT_NE(first_contents.find("ber,bits,64"), std::string::npos);
+    EXPECT_NE(first_contents.find("ber,bit_errors,1"), std::string::npos);
+    EXPECT_EQ(first_contents.find("ci_lower"), std::string::npos);
+    EXPECT_NE(second_contents.find("ber,bits,64"), std::string::npos);
+    EXPECT_NE(second_contents.find("ber,bit_errors,2"), std::string::npos);
+    EXPECT_EQ(second_contents.find("ci_lower"), std::string::npos);
 
     first_report.close();
     second_report.close();
@@ -512,17 +490,3 @@ sweep:
 }
 
 } // namespace
-
-int main() {
-    try {
-        test_stop_policies();
-        test_mixed_type_worker();
-        test_broadcaster_delivery();
-        test_confidence_criterion();
-        test_coordinator_results();
-        test_sweep_results();
-    } catch (const std::exception &error) {
-        std::cerr << error.what() << '\n';
-        return 1;
-    }
-}

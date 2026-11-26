@@ -11,8 +11,10 @@ option(DATAFLOW_BUILD_EXAMPLES "Build dataflow examples" ON)
 if(DATAFLOW_ENABLE_CLANG_TIDY)
     find_program(CLANG_TIDY_EXE NAMES "clang-tidy")
     if(CLANG_TIDY_EXE)
-        set(CMAKE_CXX_CLANG_TIDY
-            "${CLANG_TIDY_EXE};--extra-arg-before=--driver-mode=cl")
+        set(CMAKE_CXX_CLANG_TIDY "${CLANG_TIDY_EXE}")
+        if(MSVC)
+            list(APPEND CMAKE_CXX_CLANG_TIDY --extra-arg-before=--driver-mode=cl)
+        endif()
         message(STATUS "clang-tidy found and enabled: ${CLANG_TIDY_EXE}")
     else()
         message(WARNING "clang-tidy executable not found")
@@ -89,25 +91,17 @@ if(TARGET dataflow_bsc_example)
 endif()
 
 if(BUILD_TESTING)
-    add_executable(graph_plan_test tests/graph_plan_test.cpp)
-    target_link_libraries(graph_plan_test PRIVATE dataflow::core)
-    dataflow_enable_warnings(graph_plan_test)
-    add_test(NAME graph_plan_test COMMAND graph_plan_test)
+    find_package(GTest CONFIG REQUIRED)
+    include(GoogleTest)
 
-    add_executable(runtime_feature_test tests/runtime_feature_test.cpp)
-    target_link_libraries(runtime_feature_test PRIVATE dataflow::core)
-    dataflow_enable_warnings(runtime_feature_test)
-    add_test(NAME runtime_feature_test COMMAND runtime_feature_test)
-
-    add_executable(worker_contract_test tests/worker_contract_test.cpp)
-    target_link_libraries(worker_contract_test PRIVATE dataflow::core)
-    dataflow_enable_warnings(worker_contract_test)
-    add_test(NAME worker_contract_test COMMAND worker_contract_test)
-
-    add_executable(cyclic_queue_test tests/cyclic_queue_test.cpp)
-    target_link_libraries(cyclic_queue_test PRIVATE dataflow::core)
-    dataflow_enable_warnings(cyclic_queue_test)
-    add_test(NAME cyclic_queue_test COMMAND cyclic_queue_test)
+    foreach(test_target IN ITEMS
+            graph_plan_test runtime_feature_test worker_contract_test
+            cyclic_queue_test replica_random_test)
+        add_executable(${test_target} tests/${test_target}.cpp)
+        target_link_libraries(${test_target} PRIVATE dataflow::core GTest::gtest_main)
+        dataflow_enable_warnings(${test_target})
+        gtest_discover_tests(${test_target})
+    endforeach()
 endif()
 
 install(TARGETS dataflow_core
@@ -119,22 +113,11 @@ install(TARGETS dataflow_core
 )
 install(DIRECTORY include/dataflow/
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/dataflow
-)
-
-
-install(FILES
-    include/interfaces/iqueue.h
-    include/interfaces/iworker.h
-    include/interfaces/statistics.h
-    include/interfaces/typed_statistics_provider.h
-    include/interfaces/worker_factory.h
-    include/interfaces/worker_ports.h
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/interfaces
-)
-install(FILES
-    include/storage/cyclic_queue.h
-    include/storage/queue_types.h
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/storage
+    FILES_MATCHING PATTERN "*.h"
+    PATTERN "graphs" EXCLUDE
+    PATTERN "runtime" EXCLUDE
+    PATTERN "workers" EXCLUDE
+    PATTERN "stop_token.h" EXCLUDE
 )
 
 configure_package_config_file(

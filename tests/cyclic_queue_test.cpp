@@ -1,23 +1,16 @@
-#include <storage/cyclic_queue.h>
+#include <dataflow/storage/cyclic_queue.h>
+
+#include <gtest/gtest.h>
 
 #include <cstdint>
 #include <iterator>
-#include <stdexcept>
 
 namespace {
 
 static_assert(
     std::forward_iterator<dataflow::SegmentedSpan<std::int32_t>::iterator>);
 
-void require(bool condition, const char *message) {
-    if (!condition) {
-        throw std::runtime_error(message);
-    }
-}
-
-} // namespace
-
-int main() {
+TEST(CyclicQueue, PreservesOrderAcrossWraparound) {
     dataflow::CyclicQueue<std::int32_t> queue(4, 7);
     {
         auto write = queue.begin_write_exact(3);
@@ -29,8 +22,8 @@ int main() {
     }
     {
         auto read = queue.begin_read_exact(2);
-        require(read.spans()[0] == 1 && read.spans()[1] == 2,
-            "initial queue order was wrong");
+        EXPECT_EQ(read.spans()[0], 1);
+        EXPECT_EQ(read.spans()[1], 2);
         read.consume_all();
     }
     {
@@ -39,27 +32,31 @@ int main() {
         for (auto &element : write.spans()) {
             element = value++;
         }
-        require(!write.spans().is_contiguous(),
-            "wrapped write did not expose segmented storage");
+        EXPECT_FALSE(write.spans().is_contiguous());
         write.commit_all();
     }
     {
         auto read = queue.begin_read_exact(4);
         std::int32_t expected = 3;
         for (const auto value : read.spans()) {
-            require(value == expected, "wrapped queue order was wrong");
+            EXPECT_EQ(value, expected);
             ++expected;
         }
-        require(expected == 7, "segmented span iterator had the wrong length");
+        EXPECT_EQ(expected, 7);
         read.consume_all();
     }
+}
 
+TEST(CyclicQueue, CanWriteAfterCancellingATransaction) {
+    dataflow::CyclicQueue<std::int32_t> queue(4, 7);
     {
         auto cancelled = queue.begin_write_exact(2);
         cancelled.spans()[0] = 99;
     }
-    require(queue.empty(), "cancelled write committed elements");
+    ASSERT_TRUE(queue.empty());
     auto replacement = queue.begin_write_exact(1);
     replacement.spans()[0] = 7;
     replacement.commit_all();
 }
+
+} // namespace

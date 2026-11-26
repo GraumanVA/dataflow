@@ -1,6 +1,6 @@
 #pragma once
 
-#include <graphs/execution_graph.h>
+#include <dataflow/graphs/execution_graph.h>
 
 #include <cstddef>
 #include <functional>

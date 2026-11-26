@@ -1,7 +1,7 @@
 #pragma once
 
-#include <interfaces/iworker.h>
-#include <interfaces/worker_factory.h>
+#include <dataflow/interfaces/iworker.h>
+#include <dataflow/interfaces/worker_factory.h>
 
 #include <cstddef>
 #include <memory>

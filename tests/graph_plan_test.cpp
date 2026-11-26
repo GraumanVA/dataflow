@@ -1,5 +1,7 @@
 #include <dataflow/worker_registry.h>
-#include <graphs/execution_graph.h>
+#include <dataflow/graphs/execution_graph.h>
+
+#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -7,6 +9,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -57,26 +60,20 @@ public:
     }
 };
 
-void require(bool condition, const char *message) {
-    if (!condition) {
-        throw std::runtime_error(message);
-    }
-}
-
-void require_unknown_field_rejected(std::string yaml,
+void expect_unknown_field_rejected(std::string yaml,
     std::string_view expected_context) {
+    SCOPED_TRACE(expected_context);
     try {
         std::istringstream input(std::move(yaml));
         static_cast<void>(dataflow::ConfigGraph(input));
-        throw std::runtime_error("unknown graph field was accepted");
+        ADD_FAILURE() << "Unknown graph field was accepted";
     } catch (const std::invalid_argument &error) {
-        require(std::string_view(error.what()).find(expected_context) !=
-                    std::string_view::npos,
-            "unknown field error did not identify its context");
+        EXPECT_NE(std::string_view(error.what()).find(expected_context),
+            std::string_view::npos) << error.what();
     }
 }
 
-void test_sweep_expansion() {
+TEST(GraphSweep, ExpandsProductWithSerialParameters) {
     std::istringstream product_yaml(R"(
 nodes:
   - id: probe
@@ -112,33 +109,31 @@ sweep:
         - {node: probe, param: seed}
 )");
     const dataflow::ConfigGraph product(product_yaml);
-    require(product.has_sweep(), "configured sweep was not retained");
+    ASSERT_TRUE(product.has_sweep());
     const auto points = product.sweep().expand_points();
-    require(points.size() == 6, "product sweep has the wrong point count");
+    ASSERT_EQ(points.size(), 6u);
+    ASSERT_EQ(points[0].parameters.size(), 3u);
     const auto directory = product.sweep().case_directory_name(points[0]);
-    require(points[0].parameters[0].display_name == "A" &&
-                points[0].parameters[2].display_name == "id" &&
-                directory == "case_0000__A=10__b=-1__id=100",
-        "display names were not applied to the sweep case directory");
+    EXPECT_EQ(points[0].parameters[0].display_name, "A");
+    EXPECT_EQ(points[0].parameters[2].display_name, "id");
+    EXPECT_EQ(directory, "case_0000__A=10__b=-1__id=100");
 
     const auto first = product.with_assignments(points[0].assignments);
-    require(first.node(0).params["a"].as<int>() == 10 &&
-                first.node(0).params["b"].as<double>() == -1.0 &&
-                first.node(0).params["metadata"]["case_id"].as<int>() == 100,
-        "first product sweep point was expanded incorrectly");
+    EXPECT_EQ(first.node(0).params["a"].as<int>(), 10);
+    EXPECT_DOUBLE_EQ(first.node(0).params["b"].as<double>(), -1.0);
+    EXPECT_EQ(first.node(0).params["metadata"]["case_id"].as<int>(), 100);
     const auto fifth = product.with_assignments(points[4].assignments);
-    require(fifth.node(0).params["a"].as<int>() == 20 &&
-                fifth.node(0).params["b"].as<double>() == -0.5 &&
-                fifth.node(0).params["metadata"]["case_id"].as<int>() == 140,
-        "product sweep ordering or point serial was incorrect");
+    EXPECT_EQ(fifth.node(0).params["a"].as<int>(), 20);
+    EXPECT_DOUBLE_EQ(fifth.node(0).params["b"].as<double>(), -0.5);
+    EXPECT_EQ(fifth.node(0).params["metadata"]["case_id"].as<int>(), 140);
 
     const auto replicas = product.sweep().expand_replicas(3);
-    require(replicas.size() == 3,
-        "replica serial expansion has the wrong size");
+    ASSERT_EQ(replicas.size(), 3u);
     const auto third_replica = fifth.with_assignments(replicas[2].assignments);
-    require(third_replica.node(0).params["seed"].as<int>() == 11,
-        "replica serial was expanded incorrectly");
+    EXPECT_EQ(third_replica.node(0).params["seed"].as<int>(), 11);
+}
 
+TEST(GraphSweep, PairsZipAxesByIndex) {
     std::istringstream zip_yaml(R"(
 nodes:
   - id: probe
@@ -160,12 +155,13 @@ sweep:
 )");
     const dataflow::ConfigGraph zipped(zip_yaml);
     const auto zipped_points = zipped.sweep().expand_points();
-    require(zipped_points.size() == 2, "zip sweep has the wrong point count");
+    ASSERT_EQ(zipped_points.size(), 2u);
     const auto second = zipped.with_assignments(zipped_points[1].assignments);
-    require(second.node(0).params["a"].as<int>() == 2 &&
-                second.node(0).params["b"].as<int>() == 6,
-        "zip sweep paired values incorrectly");
+    EXPECT_EQ(second.node(0).params["a"].as<int>(), 2);
+    EXPECT_EQ(second.node(0).params["b"].as<int>(), 6);
+}
 
+TEST(GraphSweep, RejectsZipAxesOfDifferentLengths) {
     std::istringstream invalid_zip_yaml(R"(
 nodes:
   - id: probe
@@ -182,17 +178,13 @@ sweep:
       values: [3]
       targets: [{node: probe, param: b}]
 )");
-    try {
+    EXPECT_THROW({
         const dataflow::ConfigGraph invalid_zip(invalid_zip_yaml);
         static_cast<void>(invalid_zip.sweep().expand_points());
-        throw std::runtime_error("mismatched zipped axes were accepted");
-    } catch (const std::invalid_argument &) {
-    }
+    }, std::invalid_argument);
 }
 
-} // namespace
-
-int main() {
+TEST(GraphPlan, CompilesAndMaterializesNamedPorts) {
     std::istringstream yaml(R"(
 nodes:
   - id: source
@@ -217,19 +209,19 @@ edges:
     const dataflow::ConfigGraph config(yaml);
     const auto plan = dataflow::GraphCompiler{}.compile(config, workers);
 
-    require(plan.workers.size() == 2, "wrong worker count");
-    require(plan.queues.size() == 1, "wrong queue count");
-    require(plan.queues.front().capacity == 5,
-        "default queue capacity was not calculated from port sizes");
-    require(plan.topological_order.size() == 2, "wrong schedule size");
+    EXPECT_EQ(plan.workers.size(), 2u);
+    ASSERT_EQ(plan.queues.size(), 1u);
+    EXPECT_EQ(plan.queues.front().capacity, 5u);
+    EXPECT_EQ(plan.topological_order.size(), 2u);
 
     const dataflow::CyclicQueueFactory queues;
     const dataflow::ExecutionGraph graph(config, plan, queues);
-    require(graph.workers().size() == 2, "workers were not materialized");
-    require(graph.queues().size() == 1, "queues were not materialized");
-    require(graph.queues().front()->type() == dataflow::ScalarType::i32,
-        "queue has the wrong scalar type");
+    EXPECT_EQ(graph.workers().size(), 2u);
+    ASSERT_EQ(graph.queues().size(), 1u);
+    EXPECT_EQ(graph.queues().front()->type(), dataflow::ScalarType::i32);
+}
 
+TEST(GraphPlan, ReportsDiagnosticsForAnUnknownPort) {
     std::istringstream invalid_yaml(R"(
 nodes:
   - id: source
@@ -242,30 +234,36 @@ edges:
   - producer: {node: source, port: missing}
     consumer: {node: sink, port: input_0}
 )");
+    dataflow::WorkerRegistry workers;
+    workers.register_worker<TestWorker>("source");
+    workers.register_worker<TestWorker>("sink");
+
     try {
         const dataflow::ConfigGraph invalid(invalid_yaml);
         static_cast<void>(dataflow::GraphCompiler{}.compile(invalid, workers));
-        throw std::runtime_error("unknown named port was accepted");
+        ADD_FAILURE() << "Unknown named port was accepted";
     } catch (const dataflow::GraphCompilationError &error) {
-        require(!error.diagnostics().empty(),
-            "named-port error did not contain diagnostics");
+        EXPECT_FALSE(error.diagnostics().empty());
     }
+}
 
-    require_unknown_field_rejected("nodes: []\nedges: []\nunknown: true\n",
+TEST(GraphPlan, ReportsContextForUnknownYamlFields) {
+    expect_unknown_field_rejected("nodes: []\nedges: []\nunknown: true\n",
         "graph");
-    require_unknown_field_rejected(
+    expect_unknown_field_rejected(
         "runtime: {unknown: true}\nnodes: []\nedges: []\n",
         "runtime");
-    require_unknown_field_rejected(
+    expect_unknown_field_rejected(
         "nodes: [{id: source, type: source, unknown: true}]\nedges: []\n",
         "worker");
-    require_unknown_field_rejected(
+    expect_unknown_field_rejected(
         "nodes: []\nedges: [{producer: {node: a, port: out}, consumer: "
         "{node: b, port: in}, unknown: true}]\n",
         "edge");
-    require_unknown_field_rejected(
+    expect_unknown_field_rejected(
         "nodes: []\nedges: [{producer: {node: a, port: out, unknown: true}, "
         "consumer: {node: b, port: in}}]\n",
         "producer");
-    test_sweep_expansion();
 }
+
+} // namespace

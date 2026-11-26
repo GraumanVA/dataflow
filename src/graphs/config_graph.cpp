@@ -1,4 +1,4 @@
-#include <graphs/config_graph.h>
+#include <dataflow/graphs/config_graph.h>
 
 #include <algorithm>
 #include <fstream>

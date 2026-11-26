@@ -1,7 +1,7 @@
 #include <dataflow/engine.h>
-#include <runtime/coordinator.h>
-#include <storage/cyclic_queue.h>
-#include <workers/builtin_worker_registry.h>
+#include <dataflow/runtime/coordinator.h>
+#include <dataflow/storage/cyclic_queue.h>
+#include <dataflow/workers/builtin_worker_registry.h>
 
 #include <iostream>
 #include <stdexcept>

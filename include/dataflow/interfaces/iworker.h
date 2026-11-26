@@ -1,7 +1,8 @@
 #pragma once
 
-#include <interfaces/worker_ports.h>
-#include <storage/cyclic_queue.h>
+#include <dataflow/interfaces/worker_ports.h>
+#include <dataflow/storage/cyclic_queue.h>
+#include <dataflow/worker_context.h>
 
 #include <exception>
 #include <format>
@@ -34,6 +35,8 @@ public:
         return progress_made;
     }
 
+    // Called once on each execution instance before queues are bound.
+    virtual void initialize_random_streams(const WorkerContext &) {}
     virtual void bind(WorkerBindings bindings) = 0;
 
     virtual ~IWorker() = default;

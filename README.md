@@ -18,7 +18,8 @@ cmake --build --preset conan-debug
 ctest --preset conan-debug --output-on-failure
 ```
 
-Use `conan-release` to build or test Release. Run one scenario with:
+Conan also installs GoogleTest for the test targets. Use `conan-release` to
+build or test Release. Run one scenario with:
 
 ```text
 dataflow path/to/scenario.yaml
@@ -39,8 +40,11 @@ dataflow_bsc_example examples/bsc_channel/bsc_sweep.yaml
 ```
 
 The source exposes `seed`, `emitted_block_size`, and `probability_one`. The BSC
-exposes `accepted_size` and `crossover_probability`; it uses a fixed internal
-seed so repeated example runs are reproducible. See
+exposes `seed`, `accepted_size`, and `crossover_probability`. The engine
+derives a separate random stream for each node, sweep point, and replica from
+the configured base seed. The streams repeat for the same configuration and
+standard library. Time-based statistics publication can still change the final
+sample count and BER. See
 `examples/bsc_channel/bsc_workers.h` for the worker definitions and
 `examples/bsc_channel/bsc_sweep.yaml` for the complete graph.
 
@@ -227,9 +231,10 @@ points.
 
 `derived` serial values advance once per expanded point, after product or zip
 combination. `replica_parameters` advance by replica index and restart at the
-same configured `start` for every point. The latter is intended for seeds:
-with `runtime.threads: 4`, the example assigns seeds `0`, `1`, `2`, and `3` at
-every SNR. Replica-derived values may change worker behavior but must not change
+same configured `start` for every point. With `runtime.threads: 4`, the example
+assigns explicit seed parameters `0`, `1`, `2`, and `3` at every SNR. Workers
+that use the engine's random stream helper can share a base seed across all
+replicas. Replica-derived values may change worker behavior but must not change
 port declarations, queue layout, or graph topology.
 
 The command-line application detects sweeps automatically. Library callers use
@@ -359,6 +364,23 @@ such as broadcaster outputs, should continue to use a homogeneous or custom
 worker implementation. The lower-level `TypedWorker` remains available when a
 worker needs direct control over construction, binding, or readiness.
 
+### Random streams
+
+Stochastic workers can override `initialize_random_streams` to seed their
+generator. The engine calls it once per worker instance before binding queues.
+
+```cpp
+void initialize_random_streams(const dataflow::WorkerContext& context) override {
+    generator_ = context.make_random_engine(base_seed_);
+}
+```
+
+`make_random_engine()` returns a seeded `std::mt19937_64`. It combines the
+worker's base seed with the zero-based sweep point, replica index, and node
+position in the scenario. Ordinary runs use point zero. Node positions give
+different nodes separate streams even when they share a base seed.
+`WorkerTestHarnessOptions::context` can supply these coordinates for worker tests.
+
 ## Testing a worker
 
 Include `<dataflow/worker_test.h>` to exercise one worker without manually
@@ -423,8 +445,8 @@ also expose protected `observer_config()` and `observer_ports()` accessors.
 aggregation and reporting methods should use the retained configuration because
 empty aggregation instances are intentionally unbound.
 
-Keep observer accumulators independent and additive. No worker should know the
-replica/thread index. See `include/workers/ber_observer.h` for a complete
+Keep observer accumulators independent and additive. See
+`include/dataflow/workers/ber_observer.h` for a complete
 two-input observer with error-count and Wilson confidence-interval criteria.
 
 Periodic snapshots use `runtime.statistics.publish_interval_seconds`,

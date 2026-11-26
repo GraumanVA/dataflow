@@ -1,8 +1,8 @@
 #pragma once
 
 #include <dataflow/graph_error.h>
-#include <graphs/config_graph.h>
-#include <interfaces/worker_factory.h>
+#include <dataflow/graphs/config_graph.h>
+#include <dataflow/interfaces/worker_factory.h>
 
 #include <cstddef>
 #include <vector>

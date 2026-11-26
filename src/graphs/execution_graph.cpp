@@ -1,4 +1,4 @@
-#include <graphs/execution_graph.h>
+#include <dataflow/graphs/execution_graph.h>
 
 #include <stdexcept>
 #include <utility>
@@ -9,18 +9,22 @@ ExecutionGraph::ExecutionGraph(const ConfigGraph &config,
     const IWorkerFactory &worker_factory,
     const CyclicQueueFactory &queue_factory) {
     const auto plan = GraphCompiler{}.compile(config, worker_factory);
-    materialize(config, plan, queue_factory);
+    materialize(config, plan, queue_factory, 0, 0);
 }
 
 ExecutionGraph::ExecutionGraph(const ConfigGraph &config,
     const ExecutionPlan &plan,
-    const CyclicQueueFactory &queue_factory) {
-    materialize(config, plan, queue_factory);
+    const CyclicQueueFactory &queue_factory,
+    std::size_t sweep_point,
+    std::size_t replica) {
+    materialize(config, plan, queue_factory, sweep_point, replica);
 }
 
 void ExecutionGraph::materialize(const ConfigGraph &config,
     const ExecutionPlan &plan,
-    const CyclicQueueFactory &queue_factory) {
+    const CyclicQueueFactory &queue_factory,
+    std::size_t sweep_point,
+    std::size_t replica) {
     queues_.resize(plan.queues.size());
     for (const auto &queue : plan.queues) {
         if (queue.id >= queues_.size()) {
@@ -53,6 +57,8 @@ void ExecutionGraph::materialize(const ConfigGraph &config,
         if (!instance) {
             throw std::runtime_error("worker factory returned a null worker");
         }
+        instance->initialize_random_streams(
+            {sweep_point, replica, worker.config_node});
         workers_[worker.id] = std::move(instance);
     }
 

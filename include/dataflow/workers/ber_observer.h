@@ -1,7 +1,7 @@
 #pragma once
 
 #include <dataflow/observer.h>
-#include <interfaces/worker_factory.h>
+#include <dataflow/interfaces/worker_factory.h>
 
 #include <algorithm>
 #include <bit>

@@ -1,7 +1,7 @@
 #pragma once
 
-#include <interfaces/statistics.h>
-#include <interfaces/worker_factory.h>
+#include <dataflow/interfaces/statistics.h>
+#include <dataflow/interfaces/worker_factory.h>
 
 #include <algorithm>
 #include <concepts>

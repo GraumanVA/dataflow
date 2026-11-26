@@ -1,4 +1,4 @@
 #pragma once
 
-#include <interfaces/iworker.h>
-#include <interfaces/worker_ports.h>
+#include <dataflow/interfaces/iworker.h>
+#include <dataflow/interfaces/worker_ports.h>

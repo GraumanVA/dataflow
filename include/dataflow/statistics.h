@@ -1,4 +1,4 @@
 #pragma once
 
-#include <interfaces/statistics.h>
-#include <interfaces/typed_statistics_provider.h>
+#include <dataflow/interfaces/statistics.h>
+#include <dataflow/interfaces/typed_statistics_provider.h>

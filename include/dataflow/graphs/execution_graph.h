@@ -1,11 +1,12 @@
 #pragma once
 
-#include <graphs/config_graph.h>
-#include <graphs/execution_plan.h>
-#include <interfaces/iworker.h>
-#include <interfaces/worker_factory.h>
-#include <storage/cyclic_queue.h>
+#include <dataflow/graphs/config_graph.h>
+#include <dataflow/graphs/execution_plan.h>
+#include <dataflow/interfaces/iworker.h>
+#include <dataflow/interfaces/worker_factory.h>
+#include <dataflow/storage/cyclic_queue.h>
 
+#include <cstddef>
 #include <memory>
 #include <vector>
 
@@ -18,7 +19,9 @@ class ExecutionGraph {
 
     void materialize(const ConfigGraph &config,
         const ExecutionPlan &plan,
-        const CyclicQueueFactory &queue_factory);
+        const CyclicQueueFactory &queue_factory,
+        std::size_t sweep_point,
+        std::size_t replica);
 
 public:
     ExecutionGraph(const ConfigGraph &config,
@@ -27,7 +30,9 @@ public:
 
     ExecutionGraph(const ConfigGraph &config,
         const ExecutionPlan &plan,
-        const CyclicQueueFactory &queue_factory);
+        const CyclicQueueFactory &queue_factory,
+        std::size_t sweep_point = 0,
+        std::size_t replica = 0);
 
     [[nodiscard]] const std::vector<std::shared_ptr<IQueue>> &queues()
         const noexcept {
