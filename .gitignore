@@ -1,0 +1,5 @@
+# CMake and Conan build output
+/build/
+
+# Simulation reports
+/statistics/
