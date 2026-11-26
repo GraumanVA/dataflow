@@ -1,5 +1,9 @@
 # Dataflow simulation engine
 
+[![C++ CI](https://github.com/GraumanVA/dataflow/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/GraumanVA/dataflow/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![C++ standard: C++20](https://img.shields.io/badge/C%2B%2B-20-blue)](CMakeLists.txt)
+
 This project runs configured acyclic dataflow graphs. Queues connect typed worker
 ports, workers execute one transaction at a time, and observer workers can stop a
 simulation after collecting enough statistics.
